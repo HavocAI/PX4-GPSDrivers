@@ -1168,6 +1168,7 @@ private:
 	uint16_t _rx_msg{};
 	uint16_t _rx_payload_index{0};
 	uint16_t _rx_payload_length{0};
+	uint8_t _rx_nav_sat_num_svs{0};
 
 	uint32_t _ubx_version{0};
 

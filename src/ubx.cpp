@@ -1703,23 +1703,45 @@ GPSDriverUBX::payloadRxAddNavSat(const uint8_t b)
 
 	} else {
 		if (_rx_payload_index == sizeof(ubx_payload_rx_nav_sat_part1_t)) {
-			// Part 1 complete: decode Part 1 buffer
-			_satellite_info->count = MIN(_buf.payload_rx_nav_sat_part1.numSvs, satellite_info_s::SAT_INFO_MAX_SATELLITES);
+			// Part 1 complete: decode Part 1 buffer, Part 2 reuses the same memory so keep the count
+			_rx_nav_sat_num_svs = _buf.payload_rx_nav_sat_part1.numSvs;
+			_satellite_info->count = 0;
 			UBX_TRACE_SVINFO("SAT len %u  numCh %u", (unsigned)_rx_payload_length,
-					 (unsigned)_buf.payload_rx_nav_sat_part1.numSvs);
+					 (unsigned)_rx_nav_sat_num_svs);
 		}
 
-		if (_rx_payload_index < sizeof(ubx_payload_rx_nav_sat_part1_t) + _satellite_info->count * sizeof(
+		if (_rx_payload_index < sizeof(ubx_payload_rx_nav_sat_part1_t) + _rx_nav_sat_num_svs * sizeof(
 			    ubx_payload_rx_nav_sat_part2_t)) {
-			// Still room in _satellite_info: fill Part 2 buffer
+			// fill Part 2 buffer
 			unsigned buf_index = (_rx_payload_index - sizeof(ubx_payload_rx_nav_sat_part1_t)) % sizeof(
 						     ubx_payload_rx_nav_sat_part2_t);
 			p_buf[buf_index] = b;
 
 			if (buf_index == sizeof(ubx_payload_rx_nav_sat_part2_t) - 1) {
-				// Part 2 complete: decode Part 2 buffer
-				unsigned sat_index = (_rx_payload_index - sizeof(ubx_payload_rx_nav_sat_part1_t)) /
-						     sizeof(ubx_payload_rx_nav_sat_part2_t);
+				// Part 2 complete: decode Part 2 buffer. Receivers can report more satellites than fit, keep the
+				// strongest so the published signal levels represent the satellites in use.
+				const uint8_t cno = static_cast<uint8_t>(_buf.payload_rx_nav_sat_part2.cno);
+				unsigned sat_index = _satellite_info->count;
+
+				if (_satellite_info->count < satellite_info_s::SAT_INFO_MAX_SATELLITES) {
+					_satellite_info->count++;
+
+				} else {
+					unsigned weakest = 0;
+
+					for (unsigned i = 1; i < satellite_info_s::SAT_INFO_MAX_SATELLITES; i++) {
+						if (_satellite_info->snr[i] < _satellite_info->snr[weakest]) {
+							weakest = i;
+						}
+					}
+
+					if (cno <= _satellite_info->snr[weakest]) {
+						// weaker than every stored satellite
+						return (++_rx_payload_index >= _rx_payload_length) ? 1 : 0;
+					}
+
+					sat_index = weakest;
+				}
 
 				// convert gnssId:svId to a 8 bit number (use svId numbering from NAV-SVINFO)
 				uint8_t ubx_sat_gnssId = static_cast<uint8_t>(_buf.payload_rx_nav_sat_part2.gnssId);
@@ -1782,11 +1804,12 @@ GPSDriverUBX::payloadRxAddNavSat(const uint8_t b)
 				}
 
 				_satellite_info->svid[sat_index]	  = svinfo_svid;
-				_satellite_info->used[sat_index]	  = static_cast<uint8_t>(_buf.payload_rx_nav_sat_part2.flags & 0x01);
+				// flags bits 0-2 are the quality indicator, bit 3 is svUsed
+				_satellite_info->used[sat_index]	  = static_cast<uint8_t>((_buf.payload_rx_nav_sat_part2.flags >> 3) & 0x01);
 				_satellite_info->elevation[sat_index] = static_cast<uint8_t>(_buf.payload_rx_nav_sat_part2.elev);
 				_satellite_info->azimuth[sat_index]	  = static_cast<uint8_t>(static_cast<float>(_buf.payload_rx_nav_sat_part2.azim) *
 						255.0f / 360.0f);
-				_satellite_info->snr[sat_index]		  = static_cast<uint8_t>(_buf.payload_rx_nav_sat_part2.cno);
+				_satellite_info->snr[sat_index]		  = cno;
 				_satellite_info->prn[sat_index]		  = svinfo_svid;
 				UBX_TRACE_SVINFO("SAT #%02u  svid %3u  used %u  elevation %3u  azimuth %3u  snr %3u  prn %3u",
 						 static_cast<unsigned>(sat_index + 1),
